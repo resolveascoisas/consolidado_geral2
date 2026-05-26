@@ -4,8 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Consolidador Geral AVAP - Múltiplas Escolas</title>
+    <!-- Bibliotecas Necessárias -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js" integrity="sha512-GsLlZN/3F2ErC5ifS5QtgpiJtWd43JWSuIgh7mbzZ8zBps+dvLusV+eNQATqgA/HdeKFVgA5v3S/cIrLF7QnIg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
 
@@ -89,6 +92,20 @@
         .doc-subtitle { font-size: 15px; font-weight: 600; color: #475569; margin: 0 0 6px 0; }
         .doc-intro { font-size: 12px; color: #64748b; white-space: pre-wrap; line-height: 1.4; }
 
+        .insights-panel {
+            display: flex; gap: 15px; margin-bottom: 20px; page-break-inside: avoid;
+        }
+        .insight-card {
+            flex: 1; background: #fff; padding: 12px 15px; border-radius: 6px; 
+            border: 1px solid var(--border-color); border-left-width: 5px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
+        }
+        .insight-card.success { border-left-color: #10b981; background-color: #f0fdf4; }
+        .insight-card.warning { border-left-color: #ef4444; background-color: #fef2f2; }
+        .insight-card.info { border-left-color: #3b82f6; background-color: #eff6ff; }
+        .insight-title { font-size: 11px; color: #475569; font-weight: 700; text-transform: uppercase; margin-bottom: 4px; letter-spacing: 0.5px; }
+        .insight-value { font-size: 15px; font-weight: 700; color: var(--primary-color); }
+
         .matrix-table {
             width: 100%; border-collapse: collapse; font-size: 11px;
         }
@@ -119,9 +136,14 @@
         }
         .row-global .col-text { background-color: #e2e8f0; color: var(--primary-color); text-transform: uppercase; }
 
+        /* Estilos dos Gráficos */
+        .charts-container { margin-top: 30px; }
+        .section-title { color: var(--primary-color); margin-top: 20px; border-bottom: 2px solid var(--border-color); padding-bottom: 5px; font-size: 18px; text-transform: uppercase; }
+        .chart-box { background: #fff; border: 1px solid var(--border-color); border-radius: 8px; padding: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.02); }
+        .chart-box-title { font-size: 14px; font-weight: 600; text-align: center; margin-bottom: 10px; color: #475569; }
+
         .filename-input-group { display: flex; gap: 10px; align-items: center; margin-top: 10px; }
         .filename-input-group input { flex: 1; }
-        .filename-preview { font-size: 12px; color: #64748b; margin-top: 5px; }
 
         .matrix-table tr { page-break-inside: avoid !important; }
         .matrix-table thead { display: table-header-group; }
@@ -147,6 +169,9 @@
             .cell-yellow { background-color: #ffea00 !important; color: #000000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             .cell-green { background-color: #00e676 !important; color: #000000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             .row-global .col-text { background-color: #cbd5e1 !important; color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact;}
+            .insight-card { border: 1px solid #000; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+            .charts-container { page-break-before: always; } /* Força os gráficos para a próxima página na impressão/PDF */
+            .chart-box { page-break-inside: avoid; border: 1px solid #000; }
         }
     </style>
 </head>
@@ -247,7 +272,7 @@
                     </tr>
                 </table>
                 <div style="text-align: right; margin-top: 15px;">
-                    <button class="btn btn-success" onclick="generateUnifiedReport()">Gerar Tabela Consolidada</button>
+                    <button class="btn btn-success" onclick="generateUnifiedReport()">Gerar Relatório Completo</button>
                 </div>
             </div>
         </div>
@@ -265,6 +290,11 @@
     let globalSubjects = {}; 
     let allSchools = []; 
     let logoBase64 = "";
+    
+    // Variáveis globais para armazenar instâncias dos gráficos
+    let chartSubjectsInstance = null;
+    let chartDistInstance = null;
+    let chartRankingInstance = null;
 
     function extractSchoolNameFromFile(filename) {
         if (!filename) return "";
@@ -310,14 +340,11 @@
         });
     }
 
-    // HEURÍSTICA: Converte o valor preenchido na célula para a quantidade real de acertos.
-    // Isso nos permite usar a mesma base de média ponderada independente de como a escola preencheu.
     function parseAcertos(val, possiveis) {
         if (val === undefined || val === null || val.toString().trim() === "" || val === "-") return 0;
         
         let strVal = val.toString().trim();
         
-        // 1. O usuário digitou com o símbolo '%' explícito
         if (strVal.includes('%')) {
             let num = parseFloat(strVal.replace('%', '').replace(',', '.'));
             return (num / 100) * possiveis;
@@ -326,23 +353,18 @@
         let numVal = parseFloat(strVal.replace(',', '.'));
         if (isNaN(numVal)) return 0;
 
-        // 2. O Excel enviou a formatação interna como decimal puro (Ex: 0.85 = 85%)
         if (numVal > 0 && numVal <= 1 && numVal % 1 !== 0) {
             return numVal * possiveis;
         }
 
-        // 3. Foi digitada uma % que não é redonda (ex: 85.5). Como acertos não têm decimal, só pode ser %
         if (numVal > 1 && numVal <= 100 && numVal % 1 !== 0) {
             return (numVal / 100) * possiveis;
         }
 
-        // 4. O número é maior que o MÁXIMO possível de acertos, mas se encaixa em <100 (Ex: 85 acertos num total de 50)
-        // Isso revela que a pessoa claramente preencheu a porcentagem.
         if (numVal > possiveis && numVal <= 100) {
             return (numVal / 100) * possiveis;
         }
 
-        // 5. Caso padrão: Número inteiro inserido que é factível (<= possíveis), assume-se Acertos Brutos.
         return numVal;
     }
 
@@ -410,8 +432,6 @@
                             
                             if (val !== undefined && val.toString().trim() !== "") {
                                 const possiveis = alunos * info.qCount; 
-                                
-                                // O pulo do gato acontece aqui: converte qualquer formato de entrada no peso correto em acertos
                                 const acertos = parseAcertos(val, possiveis);
                                 
                                 if (!schoolData.results[info.baseName]) {
@@ -488,6 +508,12 @@
         if (pct < limitRed) return "cell-red";
         if (pct >= limitGreen) return "cell-green";
         return "cell-yellow";
+    }
+
+    function getChartColor(pct, limitRed, limitGreen) {
+        if (pct < limitRed) return "#ff1744"; // Vermelho
+        if (pct >= limitGreen) return "#00e676"; // Verde
+        return "#ffea00"; // Amarelo
     }
 
     function generateUnifiedReport() {
@@ -569,6 +595,54 @@
             return sortOrder === 'asc' ? valA - valB : valB - valA;
         });
 
+        let globalAlunos = 0;
+        let globalAcertos = 0;
+        let globalPossiveis = 0;
+        let resumoComp = {};
+        orderedKeys.forEach(k => resumoComp[k] = { acertos: 0, possiveis: 0 });
+
+        let bestSchool = { name: '-', pct: -1 };
+        let schoolsBelowRed = 0;
+        let distributionData = { green: 0, yellow: 0, red: 0 };
+
+        schoolsToSort.forEach(school => {
+            globalAlunos += school.alunos;
+            globalAcertos += school.filteredAcertos;
+            globalPossiveis += school.filteredPossiveis;
+            
+            orderedKeys.forEach(k => {
+                const res = school.results[k];
+                if (res) {
+                    resumoComp[k].acertos += res.acertos;
+                    resumoComp[k].possiveis += res.possiveis;
+                }
+            });
+
+            if (school.rowPct > bestSchool.pct) {
+                bestSchool = { name: school.nome, pct: school.rowPct };
+            }
+            
+            if (school.rowPct !== -1) {
+                if (school.rowPct < limitRed) {
+                    schoolsBelowRed++;
+                    distributionData.red++;
+                } else if (school.rowPct >= limitGreen) {
+                    distributionData.green++;
+                } else {
+                    distributionData.yellow++;
+                }
+            }
+        });
+
+        let lowestSubj = { name: '-', pct: 101 };
+        orderedKeys.forEach(k => {
+            let p = resumoComp[k].possiveis > 0 ? (resumoComp[k].acertos / resumoComp[k].possiveis) * 100 : 101;
+            if (p < lowestSubj.pct && resumoComp[k].possiveis > 0) {
+                lowestSubj = { name: globalSubjects[k].exportName, pct: p };
+            }
+        });
+
+        // 1. HEADER & INSIGHTS
         let html = `<div class="doc-header">`;
         if (logoBase64) html += `<img src="${logoBase64}" class="doc-logo" alt="Logo">`;
         html += `<div>
@@ -577,6 +651,23 @@
                     ${docIntro ? `<div class="doc-intro">${docIntro}</div>` : ''}
                  </div></div>`;
 
+        html += `
+        <div class="insights-panel">
+            <div class="insight-card success">
+                <div class="insight-title">🏆 Destaque Regional</div>
+                <div class="insight-value">${bestSchool.pct !== -1 ? `${bestSchool.name} (${bestSchool.pct.toFixed(1).replace('.', ',')}%)` : '-'}</div>
+            </div>
+            <div class="insight-card warning">
+                <div class="insight-title">📉 Disciplina Desafio</div>
+                <div class="insight-value">${lowestSubj.pct !== 101 ? `${lowestSubj.name} (${lowestSubj.pct.toFixed(1).replace('.', ',')}%)` : '-'}</div>
+            </div>
+            <div class="insight-card ${schoolsBelowRed > 0 ? 'warning' : 'success'}">
+                <div class="insight-title">⚠️ Atenção Pedagógica</div>
+                <div class="insight-value">${schoolsBelowRed} unidade(s) abaixo de ${limitRed}%</div>
+            </div>
+        </div>`;
+
+        // 2. TABELA DE DADOS
         html += `<table class="matrix-table"><thead><tr>
                     <th style="min-width: 200px;">Unidade Escolar</th>
                     <th>Total<br>Alunos</th>`;
@@ -585,38 +676,23 @@
         html += `   <th>Média<br>Escola</th>
                   </tr></thead><tbody>`;
 
-        let globalAlunos = 0;
-        let globalAcertos = 0;
-        let globalPossiveis = 0;
-        let resumoComp = {};
-        orderedKeys.forEach(k => resumoComp[k] = { acertos: 0, possiveis: 0 });
-
         let rowsHtml = "";
 
         schoolsToSort.forEach(school => {
-            globalAlunos += school.alunos;
-            
             rowsHtml += `<tr>
                             <td class="col-text">${school.nome}</td>
                             <td>${school.alunos}</td>`;
 
             orderedKeys.forEach(k => {
-                const res = school.results[k];
-                if (!res) {
-                    rowsHtml += `<td class="cell-empty">-</td>`; 
+                let pct = school.subjectPcts[k];
+                if (pct === -1) {
+                    rowsHtml += `<td class="cell-empty">-</td>`;
                 } else {
-                    resumoComp[k].acertos += res.acertos;
-                    resumoComp[k].possiveis += res.possiveis;
-                    
-                    let pct = school.subjectPcts[k];
                     rowsHtml += `<td class="${getSemaforoClass(pct, limitRed, limitGreen)}">${pct.toFixed(1).replace('.', ',')}%</td>`;
                 }
             });
 
-            globalAcertos += school.filteredAcertos;
-            globalPossiveis += school.filteredPossiveis;
             let rowPct = school.rowPct;
-            
             if (rowPct === -1) {
                 rowsHtml += `<td class="col-total cell-empty">-</td>`;
             } else {
@@ -646,9 +722,123 @@
 
         html += rowsHtml;
         html += `</tbody></table>`;
-        reportsArea.innerHTML = html;
 
+        // 3. SEÇÃO DE GRÁFICOS (Renderizada após a tabela)
+        html += `
+        <div class="charts-container">
+            <h2 class="section-title">Análise Gráfica</h2>
+            <div class="grid-2">
+                <div class="chart-box">
+                    <div class="chart-box-title">Desempenho da Rede por Disciplina (%)</div>
+                    <canvas id="chartSubjects"></canvas>
+                </div>
+                <div class="chart-box">
+                    <div class="chart-box-title">Distribuição de Escolas por Nível</div>
+                    <div style="height: 250px; display: flex; justify-content: center;"><canvas id="chartDist"></canvas></div>
+                </div>
+            </div>
+            <div class="chart-box" style="margin-top: 15px;">
+                <div class="chart-box-title">Ranking de Desempenho Geral por Unidade Escolar (%)</div>
+                <canvas id="chartRanking"></canvas>
+            </div>
+        </div>`;
+
+        reportsArea.innerHTML = html;
         document.getElementById('actionsArea').style.display = 'block';
+
+        // =========================================================
+        // GERAÇÃO DOS GRÁFICOS (CHART.JS)
+        // A animação é desativada (animation: false) para que a 
+        // exportação do PDF capture os gráficos instantaneamente.
+        // =========================================================
+
+        // Limpa instâncias antigas se existirem (evita bugs no auto-update)
+        if (chartSubjectsInstance) chartSubjectsInstance.destroy();
+        if (chartDistInstance) chartDistInstance.destroy();
+        if (chartRankingInstance) chartRankingInstance.destroy();
+
+        // Dados para o Gráfico de Disciplinas
+        let subjLabels = [];
+        let subjData = [];
+        let subjColors = [];
+
+        orderedKeys.forEach(k => {
+            let p = resumoComp[k].possiveis > 0 ? (resumoComp[k].acertos / resumoComp[k].possiveis) * 100 : 0;
+            subjLabels.push(globalSubjects[k].exportName);
+            subjData.push(p.toFixed(1));
+            subjColors.push(getChartColor(p, limitRed, limitGreen));
+        });
+
+        const ctxSubj = document.getElementById('chartSubjects').getContext('2d');
+        chartSubjectsInstance = new Chart(ctxSubj, {
+            type: 'bar',
+            data: {
+                labels: subjLabels,
+                datasets: [{
+                    label: 'Média (%)',
+                    data: subjData,
+                    backgroundColor: subjColors,
+                    borderWidth: 1,
+                    borderColor: '#94a3b8'
+                }]
+            },
+            options: {
+                animation: false,
+                scales: { y: { beginAtZero: true, max: 100 } },
+                plugins: { legend: { display: false } }
+            }
+        });
+
+        // Dados para o Gráfico de Distribuição (Rosca)
+        const ctxDist = document.getElementById('chartDist').getContext('2d');
+        chartDistInstance = new Chart(ctxDist, {
+            type: 'doughnut',
+            data: {
+                labels: ['Acima da Meta (Verde)', 'Atenção (Amarelo)', 'Crítico (Vermelho)'],
+                datasets: [{
+                    data: [distributionData.green, distributionData.yellow, distributionData.red],
+                    backgroundColor: ['#00e676', '#ffea00', '#ff1744'],
+                    borderWidth: 1
+                }]
+            },
+            options: {
+                animation: false,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { position: 'bottom' }
+                }
+            }
+        });
+
+        // Dados para o Gráfico de Ranking de Escolas
+        // Filtra escolas que têm dados reais (remove os -1) e ordena do maior para o menor para o gráfico
+        let rankingSchools = schoolsToSort.filter(s => s.rowPct !== -1).sort((a,b) => b.rowPct - a.rowPct);
+        let rankLabels = rankingSchools.map(s => s.nome);
+        let rankData = rankingSchools.map(s => s.rowPct.toFixed(1));
+        let rankColors = rankingSchools.map(s => getChartColor(s.rowPct, limitRed, limitGreen));
+
+        const ctxRanking = document.getElementById('chartRanking').getContext('2d');
+        chartRankingInstance = new Chart(ctxRanking, {
+            type: 'bar', // Barra vertical para facilitar leitura com muitas escolas
+            data: {
+                labels: rankLabels,
+                datasets: [{
+                    label: 'Média da Escola (%)',
+                    data: rankData,
+                    backgroundColor: rankColors,
+                    borderWidth: 1,
+                    borderColor: '#94a3b8'
+                }]
+            },
+            options: {
+                animation: false,
+                scales: { 
+                    y: { beginAtZero: true, max: 100 },
+                    x: { ticks: { autoSkip: false, maxRotation: 45, minRotation: 45 } }
+                },
+                plugins: { legend: { display: false } }
+            }
+        });
     }
     
     document.getElementById('docTitle').addEventListener('keyup', autoUpdate);
