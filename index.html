@@ -132,6 +132,10 @@
             font-size: 18px; font-weight: bold; color: var(--primary-color);
         }
 
+        .info-alert {
+            background-color: #e0f2fe; border-left: 4px solid #0284c7; padding: 10px; font-size: 12px; color: #0369a1; margin-top: 10px; border-radius: 0 4px 4px 0;
+        }
+
         @media print {
             @page { size: landscape; margin: 10mm; }
             body { background: white; padding: 0; }
@@ -163,6 +167,9 @@
                 <div>
                     <label><strong>Arquivos Excel (.xlsx): <em>Selecione VÁRIOS</em></strong></label>
                     <input type="file" id="excelFileInput" accept=".xlsx, .xls" multiple />
+                    <div class="info-alert">
+                        <strong>💡 Detecção Automática:</strong> Planilhas preenchidas com porcentagem (%) ao invés de acertos brutos serão detectadas e convertidas automaticamente.
+                    </div>
                 </div>
                 <div class="full-width">
                     <label><strong>Título do Documento:</strong></label>
@@ -206,7 +213,6 @@
                 </table>
             </div>
             <div>
-                <!-- Nova Tabela de Ordenação -->
                 <table class="config-table">
                     <tr><th colspan="2">Ordenação do Relatório</th></tr>
                     <tr>
@@ -265,7 +271,9 @@
         let nameWithoutExt = filename.replace(/\.[^/.]+$/, ""); 
         nameWithoutExt = nameWithoutExt.replace(/[^\w\s\u00C0-\u00FF-]/g, "");
         nameWithoutExt = nameWithoutExt.replace(/\b\w/g, char => char.toUpperCase());
-        return nameWithoutExt.trim().substring(0, 20).trim();
+        
+        let words = nameWithoutExt.trim().split(/\s+/);
+        return words.slice(0, 2).join(" ");
     }
 
     function saveAsPDF() {
@@ -300,6 +308,42 @@
             reader.onerror = e => reject(e);
             reader.readAsArrayBuffer(file);
         });
+    }
+
+    // HEURÍSTICA: Converte o valor preenchido na célula para a quantidade real de acertos.
+    // Isso nos permite usar a mesma base de média ponderada independente de como a escola preencheu.
+    function parseAcertos(val, possiveis) {
+        if (val === undefined || val === null || val.toString().trim() === "" || val === "-") return 0;
+        
+        let strVal = val.toString().trim();
+        
+        // 1. O usuário digitou com o símbolo '%' explícito
+        if (strVal.includes('%')) {
+            let num = parseFloat(strVal.replace('%', '').replace(',', '.'));
+            return (num / 100) * possiveis;
+        }
+
+        let numVal = parseFloat(strVal.replace(',', '.'));
+        if (isNaN(numVal)) return 0;
+
+        // 2. O Excel enviou a formatação interna como decimal puro (Ex: 0.85 = 85%)
+        if (numVal > 0 && numVal <= 1 && numVal % 1 !== 0) {
+            return numVal * possiveis;
+        }
+
+        // 3. Foi digitada uma % que não é redonda (ex: 85.5). Como acertos não têm decimal, só pode ser %
+        if (numVal > 1 && numVal <= 100 && numVal % 1 !== 0) {
+            return (numVal / 100) * possiveis;
+        }
+
+        // 4. O número é maior que o MÁXIMO possível de acertos, mas se encaixa em <100 (Ex: 85 acertos num total de 50)
+        // Isso revela que a pessoa claramente preencheu a porcentagem.
+        if (numVal > possiveis && numVal <= 100) {
+            return (numVal / 100) * possiveis;
+        }
+
+        // 5. Caso padrão: Número inteiro inserido que é factível (<= possíveis), assume-se Acertos Brutos.
+        return numVal;
     }
 
     document.getElementById('excelFileInput').addEventListener('change', async function(e) {
@@ -365,8 +409,10 @@
                             const val = row[rawHeader];
                             
                             if (val !== undefined && val.toString().trim() !== "") {
-                                const acertos = parseInt(val) || 0;
                                 const possiveis = alunos * info.qCount; 
+                                
+                                // O pulo do gato acontece aqui: converte qualquer formato de entrada no peso correto em acertos
+                                const acertos = parseAcertos(val, possiveis);
                                 
                                 if (!schoolData.results[info.baseName]) {
                                     schoolData.results[info.baseName] = { acertos: 0, possiveis: 0 };
@@ -387,7 +433,6 @@
                 }
             });
 
-            // Ordenação inicial padrão apenas para garantir estrutura
             allSchools.sort((a, b) => a.nome.localeCompare(b.nome));
 
             renderSubjectsConfig();
@@ -414,7 +459,6 @@
         let optionsHtml = `<option value="nome">Nome da Escola</option><option value="geral">Média Geral</option>`;
         
         keys.forEach((key, index) => {
-            // Preenche a tabela de checkbox
             tbody.innerHTML += `
                 <tr>
                     <td style="text-align: center;">
@@ -424,11 +468,9 @@
                     <td><input type="text" id="name_${index}" value="${globalSubjects[key].exportName}" style="padding:4px; font-size:12px;" data-key="${key}" onkeyup="autoUpdate()"></td>
                 </tr>
             `;
-            // Adiciona a disciplina como opção de ordenação
             optionsHtml += `<option value="${key}">Disciplina: ${key}</option>`;
         });
 
-        // Atualiza as opções do select mantendo a seleção anterior se possível
         sortBySelect.innerHTML = optionsHtml;
         if ([...sortBySelect.options].some(o => o.value === currentSortBy)) {
             sortBySelect.value = currentSortBy;
@@ -442,7 +484,7 @@
     }
 
     function getSemaforoClass(pct, limitRed, limitGreen) {
-        if (pct < 0) return "cell-empty"; // Tratamento para quando não há dados (-1)
+        if (pct < 0) return "cell-empty"; 
         if (pct < limitRed) return "cell-red";
         if (pct >= limitGreen) return "cell-green";
         return "cell-yellow";
@@ -477,13 +519,10 @@
             return;
         }
 
-        // =========================================================
-        // PREPARAÇÃO DE DADOS PARA ORDENAÇÃO
-        // =========================================================
         let schoolsToSort = allSchools.map(school => {
             let filteredAcertos = 0;
             let filteredPossiveis = 0;
-            let subjectPcts = {}; // Salva a porcentagem exata de cada disciplina para esta escola
+            let subjectPcts = {}; 
 
             orderedKeys.forEach(k => {
                 const res = school.results[k];
@@ -492,7 +531,7 @@
                     filteredPossiveis += res.possiveis;
                     subjectPcts[k] = res.possiveis > 0 ? (res.acertos / res.possiveis) * 100 : -1;
                 } else {
-                    subjectPcts[k] = -1; // -1 significa que a escola não tem dados para esta disciplina
+                    subjectPcts[k] = -1; 
                 }
             });
 
@@ -507,7 +546,6 @@
             };
         });
 
-        // Aplicando a ordenação
         const sortBy = document.getElementById('sortBy').value;
         const sortOrder = document.getElementById('sortOrder').value;
 
@@ -524,16 +562,12 @@
                 valB = b.subjectPcts[sortBy] !== undefined ? b.subjectPcts[sortBy] : -1;
             }
 
-            // Em caso de empate, usa a ordem alfabética para desempatar
             if (valA === valB) {
                 return a.nome.localeCompare(b.nome);
             }
 
-            // Números: Maior para menor (desc) ou Menor para maior (asc)
             return sortOrder === 'asc' ? valA - valB : valB - valA;
         });
-        // =========================================================
-
 
         let html = `<div class="doc-header">`;
         if (logoBase64) html += `<img src="${logoBase64}" class="doc-logo" alt="Logo">`;
@@ -559,7 +593,6 @@
 
         let rowsHtml = "";
 
-        // Loop agora usa o array ordenado (schoolsToSort)
         schoolsToSort.forEach(school => {
             globalAlunos += school.alunos;
             
