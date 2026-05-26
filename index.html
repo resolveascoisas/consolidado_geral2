@@ -89,21 +89,6 @@
         .doc-subtitle { font-size: 15px; font-weight: 600; color: #475569; margin: 0 0 6px 0; }
         .doc-intro { font-size: 12px; color: #64748b; white-space: pre-wrap; line-height: 1.4; }
 
-        /* Estilos do Painel de Insights */
-        .insights-panel {
-            display: flex; gap: 15px; margin-bottom: 20px; page-break-inside: avoid;
-        }
-        .insight-card {
-            flex: 1; background: #fff; padding: 12px 15px; border-radius: 6px; 
-            border: 1px solid var(--border-color); border-left-width: 5px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.02);
-        }
-        .insight-card.success { border-left-color: #10b981; background-color: #f0fdf4; }
-        .insight-card.warning { border-left-color: #ef4444; background-color: #fef2f2; }
-        .insight-card.info { border-left-color: #3b82f6; background-color: #eff6ff; }
-        .insight-title { font-size: 11px; color: #475569; font-weight: 700; text-transform: uppercase; margin-bottom: 4px; letter-spacing: 0.5px; }
-        .insight-value { font-size: 15px; font-weight: 700; color: var(--primary-color); }
-
         .matrix-table {
             width: 100%; border-collapse: collapse; font-size: 11px;
         }
@@ -162,7 +147,6 @@
             .cell-yellow { background-color: #ffea00 !important; color: #000000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             .cell-green { background-color: #00e676 !important; color: #000000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
             .row-global .col-text { background-color: #cbd5e1 !important; color: #000 !important; -webkit-print-color-adjust: exact; print-color-adjust: exact;}
-            .insight-card { border: 1px solid #000; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         }
     </style>
 </head>
@@ -326,11 +310,14 @@
         });
     }
 
+    // HEURÍSTICA: Converte o valor preenchido na célula para a quantidade real de acertos.
+    // Isso nos permite usar a mesma base de média ponderada independente de como a escola preencheu.
     function parseAcertos(val, possiveis) {
         if (val === undefined || val === null || val.toString().trim() === "" || val === "-") return 0;
         
         let strVal = val.toString().trim();
         
+        // 1. O usuário digitou com o símbolo '%' explícito
         if (strVal.includes('%')) {
             let num = parseFloat(strVal.replace('%', '').replace(',', '.'));
             return (num / 100) * possiveis;
@@ -339,18 +326,23 @@
         let numVal = parseFloat(strVal.replace(',', '.'));
         if (isNaN(numVal)) return 0;
 
+        // 2. O Excel enviou a formatação interna como decimal puro (Ex: 0.85 = 85%)
         if (numVal > 0 && numVal <= 1 && numVal % 1 !== 0) {
             return numVal * possiveis;
         }
 
+        // 3. Foi digitada uma % que não é redonda (ex: 85.5). Como acertos não têm decimal, só pode ser %
         if (numVal > 1 && numVal <= 100 && numVal % 1 !== 0) {
             return (numVal / 100) * possiveis;
         }
 
+        // 4. O número é maior que o MÁXIMO possível de acertos, mas se encaixa em <100 (Ex: 85 acertos num total de 50)
+        // Isso revela que a pessoa claramente preencheu a porcentagem.
         if (numVal > possiveis && numVal <= 100) {
             return (numVal / 100) * possiveis;
         }
 
+        // 5. Caso padrão: Número inteiro inserido que é factível (<= possíveis), assume-se Acertos Brutos.
         return numVal;
     }
 
@@ -418,6 +410,8 @@
                             
                             if (val !== undefined && val.toString().trim() !== "") {
                                 const possiveis = alunos * info.qCount; 
+                                
+                                // O pulo do gato acontece aqui: converte qualquer formato de entrada no peso correto em acertos
                                 const acertos = parseAcertos(val, possiveis);
                                 
                                 if (!schoolData.results[info.baseName]) {
@@ -575,50 +569,6 @@
             return sortOrder === 'asc' ? valA - valB : valB - valA;
         });
 
-        // =========================================================
-        // CÁLCULO DOS INSIGHTS (RESUMO EXECUTIVO)
-        // =========================================================
-        
-        let globalAlunos = 0;
-        let globalAcertos = 0;
-        let globalPossiveis = 0;
-        let resumoComp = {};
-        orderedKeys.forEach(k => resumoComp[k] = { acertos: 0, possiveis: 0 });
-
-        let bestSchool = { name: '-', pct: -1 };
-        let schoolsBelowRed = 0;
-
-        schoolsToSort.forEach(school => {
-            globalAlunos += school.alunos;
-            globalAcertos += school.filteredAcertos;
-            globalPossiveis += school.filteredPossiveis;
-            
-            orderedKeys.forEach(k => {
-                const res = school.results[k];
-                if (res) {
-                    resumoComp[k].acertos += res.acertos;
-                    resumoComp[k].possiveis += res.possiveis;
-                }
-            });
-
-            // Analisa a melhor escola e as que estão em alerta
-            if (school.rowPct > bestSchool.pct) {
-                bestSchool = { name: school.nome, pct: school.rowPct };
-            }
-            if (school.rowPct !== -1 && school.rowPct < limitRed) {
-                schoolsBelowRed++;
-            }
-        });
-
-        let lowestSubj = { name: '-', pct: 101 };
-        orderedKeys.forEach(k => {
-            let p = resumoComp[k].possiveis > 0 ? (resumoComp[k].acertos / resumoComp[k].possiveis) * 100 : 101;
-            if (p < lowestSubj.pct && resumoComp[k].possiveis > 0) {
-                lowestSubj = { name: globalSubjects[k].exportName, pct: p };
-            }
-        });
-
-        // Construção do HTML
         let html = `<div class="doc-header">`;
         if (logoBase64) html += `<img src="${logoBase64}" class="doc-logo" alt="Logo">`;
         html += `<div>
@@ -626,25 +576,6 @@
                     ${docSubtitle ? `<h2 class="doc-subtitle">${docSubtitle}</h2>` : ''}
                     ${docIntro ? `<div class="doc-intro">${docIntro}</div>` : ''}
                  </div></div>`;
-
-        // INSERÇÃO DO PAINEL DE INSIGHTS
-        html += `
-        <div class="insights-panel">
-            <div class="insight-card success">
-                <div class="insight-title">🏆 Destaque Regional</div>
-                <div class="insight-value">${bestSchool.pct !== -1 ? `${bestSchool.name} (${bestSchool.pct.toFixed(1).replace('.', ',')}%)` : '-'}</div>
-            </div>
-            <div class="insight-card warning">
-                <div class="insight-title">📉 Disciplina Desafio</div>
-                <div class="insight-value">${lowestSubj.pct !== 101 ? `${lowestSubj.name} (${lowestSubj.pct.toFixed(1).replace('.', ',')}%)` : '-'}</div>
-            </div>
-            <div class="insight-card ${schoolsBelowRed > 0 ? 'warning' : 'success'}">
-                <div class="insight-title">⚠️ Atenção Pedagógica</div>
-                <div class="insight-value">${schoolsBelowRed} unidade(s) abaixo de ${limitRed}%</div>
-            </div>
-        </div>`;
-
-        // =========================================================
 
         html += `<table class="matrix-table"><thead><tr>
                     <th style="min-width: 200px;">Unidade Escolar</th>
@@ -654,23 +585,38 @@
         html += `   <th>Média<br>Escola</th>
                   </tr></thead><tbody>`;
 
+        let globalAlunos = 0;
+        let globalAcertos = 0;
+        let globalPossiveis = 0;
+        let resumoComp = {};
+        orderedKeys.forEach(k => resumoComp[k] = { acertos: 0, possiveis: 0 });
+
         let rowsHtml = "";
 
         schoolsToSort.forEach(school => {
+            globalAlunos += school.alunos;
+            
             rowsHtml += `<tr>
                             <td class="col-text">${school.nome}</td>
                             <td>${school.alunos}</td>`;
 
             orderedKeys.forEach(k => {
-                let pct = school.subjectPcts[k];
-                if (pct === -1) {
-                    rowsHtml += `<td class="cell-empty">-</td>`;
+                const res = school.results[k];
+                if (!res) {
+                    rowsHtml += `<td class="cell-empty">-</td>`; 
                 } else {
+                    resumoComp[k].acertos += res.acertos;
+                    resumoComp[k].possiveis += res.possiveis;
+                    
+                    let pct = school.subjectPcts[k];
                     rowsHtml += `<td class="${getSemaforoClass(pct, limitRed, limitGreen)}">${pct.toFixed(1).replace('.', ',')}%</td>`;
                 }
             });
 
+            globalAcertos += school.filteredAcertos;
+            globalPossiveis += school.filteredPossiveis;
             let rowPct = school.rowPct;
+            
             if (rowPct === -1) {
                 rowsHtml += `<td class="col-total cell-empty">-</td>`;
             } else {
